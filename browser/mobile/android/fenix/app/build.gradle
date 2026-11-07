@@ -835,6 +835,17 @@ tasks.register('stageTaskarianDependencySources') {
     doLast {
         def ids = configurations.releaseRuntimeClasspath.incoming.resolutionResult.allComponents
             .collect { it.id }.findAll { it instanceof org.gradle.api.artifacts.component.ModuleComponentIdentifier }
+        if (System.getenv('TASKARIAN_GECKOVIEW_MAVEN_COORDINATE')) {
+            def target = gradle.mozconfig.substs.ANDROID_CPU_ARCH == 'x86_64' ? 'android-x86_64' : 'android'
+            def geckoview = providers.exec {
+                commandLine 'python3', "${rootProject.projectDir.parentFile}/agent/packaging/android-geckoview-component.py",
+                    'source-coordinate', target
+            }.standardOutput.asText.get().trim()
+            if (!geckoview) {
+                throw new GradleException('The complete GeckoView module requires its verified permanent source owner')
+            }
+            ids = ids.findAll { it.toString() != geckoview }
+        }
         def removedSdkGroups = ['com.google.android.gms', 'com.google.android.play',
             'com.google.firebase', 'com.android.installreferrer']
         def removedSdks = ids.findAll { it.group in removedSdkGroups }
@@ -916,6 +927,24 @@ tasks.register('stageTaskarianDependencySources') {
         if (missing) {
             throw new GradleException('Android dependency source is incomplete; see ' +
                 new File(destination, 'missing.json') + ': ' + missing.join(', '))
+        }
+    }
+}
+// The upstream OSS plugin has no exclusion option for a source-owned Maven
+// module. Its native dependency task still owns every ordinary third-party POM;
+// the complete GeckoView component's actual omni license is added by About.
+if (System.getenv('TASKARIAN_GECKOVIEW_MAVEN_COORDINATE')) {
+    tasks.matching { it.name == 'releaseOssDependencyTask' }.configureEach {
+        inputs.property('taskarianGeckoViewCoordinate', System.getenv('TASKARIAN_GECKOVIEW_MAVEN_COORDINATE'))
+        inputs.files(['TASKARIAN_GECKOVIEW_SOURCE_REFERENCE', 'TASKARIAN_GECKOVIEW_RELEASE_REFERENCE',
+                      'TASKARIAN_GECKOVIEW_MODULE_RECEIPT'].collect { file(System.getenv(it) ?: 'missing-verified-geckoview-source') })
+        notCompatibleWithConfigurationCache('Validates the exact permanent GeckoView source and license owner')
+        doLast { task ->
+            def target = gradle.mozconfig.substs.ANDROID_CPU_ARCH == 'x86_64' ? 'android-x86_64' : 'android'
+            providers.exec {
+                commandLine 'python3', "${rootProject.projectDir.parentFile}/agent/packaging/android-geckoview-component.py",
+                    'filter-maven', target, '--dependencies', task.dependenciesJson.get().asFile
+            }.result.get().assertNormalExitValue()
         }
     }
 }

@@ -140,23 +140,26 @@ jobs:
         arguments=()
         if [ "$ENGINE_ONLY" = true ]; then arguments+=(--force-build); fi
         python3 agent/packaging/browser-component.py restore "$BROWSER_TARGET" --directory candidate "${arguments[@]}"
+    - id: geckoview-component
+      name: Restore the complete unchanged GeckoView Maven module
+      if: (success()) && steps.component.outputs.hit != 'true' && !inputs.force_rebuild
+      run: python3 agent/packaging/android-geckoview-component.py restore "$BROWSER_TARGET" --directory "$RUNNER_TEMP/android-geckoview"
     - id: native-component
       name: Restore unchanged Android Gecko libraries
       env:
         GH_TOKEN: ${{ github.token }}
         TASKARIAN_FORCE_FULL_BUILD: ${{ inputs.force_rebuild && !inputs.require_native && '1' || '0' }}
       run: python3 agent/packaging/android-native-component.py "$BROWSER_TARGET" --directory "$RUNNER_TEMP/android-native"
-      if: (success()) && steps.component.outputs.hit != 'true'
+      if: (success()) && steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true'
     - name: Refuse native compilation in the resource-only phase
-      if: inputs.require_native && steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true'
+      if: inputs.require_native && steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true'
       run: echo 'Required verified native engine could not be restored; retry its producer without compiling here' >&2; exit 1
     - name: Materialize Android application build sources
       env:
         GIT_LFS_SKIP_SMUDGE: '1'
-        NATIVE_REUSED: ${{ steps.component.outputs.hit }}
       run: |
         python3 - <<'PYTHON'
-        import json, os, subprocess
+        import json, subprocess
         from pathlib import Path
         payload = json.loads(Path('references/runtime-payload.json').read_text())
         patterns = ['/.gitignore', '/LICENSE', '/AGENTS.md', '/.github/', '/agent/', '!/agent/localai/', '!/agent/machines/vendor/',
@@ -168,11 +171,9 @@ jobs:
                     '/files/', '!/files/upstream/', '/files/upstream/*.json',
                     '/references/connector/', '/references/vendor/translators/', '/references/legal/',
                     '/references/vendor/npm/', '/references/web/theme.css']
-        if os.environ.get('NATIVE_REUSED') == 'true':
-            patterns += ['/browser/taskarian/config/', '/browser/taskarian/scripts/',
-                         '/browser/taskarian/browser/branding/']
-        else:
-            patterns += ['/browser/']
+        # Mozilla's artifact build still configures mach and regenerates current
+        # Gecko resources/Java from the complete pinned browser source tree.
+        patterns += ['/browser/']
         patterns += ['/references/' + pattern for pattern in payload['files']]
         for item in payload['legal']:
             patterns += ['/references/' + item['source']]
@@ -198,9 +199,9 @@ jobs:
         sudo chmod 600 /mnt/taskarian.swap
         sudo mkswap /mnt/taskarian.swap
         sudo swapon /mnt/taskarian.swap
-      if: steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && !inputs.require_native
+      if: steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && !inputs.require_native
     - name: Prepare Android resource assembly runner
-      if: steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit == 'true'
+      if: steps.component.outputs.hit != 'true' && (steps.geckoview-component.outputs.hit == 'true' || steps.native-component.outputs.hit == 'true')
       run: |
         printf '%s\n' "TASKARIAN_PUBLISHER_KEYSTORE=$RUNNER_TEMP/droid.p12" "TASKARIAN_COMPANION_LICENSES=$RUNNER_TEMP/companion-licenses.json" >> "$GITHUB_ENV"
         mkdir -p artifacts "$MOZBUILD_STATE_PATH"
@@ -238,7 +239,7 @@ jobs:
     - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
       with:
         version: v0.17.0
-      if: steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && !inputs.require_native
+      if: steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && !inputs.require_native
     - name: Install the compatible Rust toolchain
       run: |
         version=$(python3 -c 'import json; print(json.load(open("agent/machines/rust-toolchain/sources.json"))["version"])')
@@ -246,18 +247,18 @@ jobs:
         rustup toolchain install "$version" --profile minimal --component rust-docs --target "$TASKARIAN_ANDROID_TARGET"
         rustup target add --toolchain "$version" wasm32-unknown-unknown
         printf '%s\n' "TASKARIAN_PHOTON_BUILD_CACHE=$RUNNER_TEMP/photon-cache" "TASKARIAN_SOURCE_CACHE=$RUNNER_TEMP/source-cache" >> "$GITHUB_ENV"
-      if: steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && !inputs.require_native
+      if: steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && !inputs.require_native
     - name: Select the source archive cache for component assembly
       run: echo "TASKARIAN_SOURCE_CACHE=$RUNNER_TEMP/source-cache" >> "$GITHUB_ENV"
     - name: Select the Gecko compiler cache contract
       id: gecko-cache-contract
-      if: steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && !inputs.require_native
+      if: steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && !inputs.require_native
       run: |
         digest=$(python3 agent/packaging/browser-release.py cache-contract "$BROWSER_TARGET" --output "$RUNNER_TEMP/gecko-cache-contract.json")
         printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
     - name: Restore the Gecko disk compiler cache
       id: gecko-disk-cache
-      if: steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && !inputs.require_native
+      if: steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && !inputs.require_native
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
       with:
         path: ${{ env.SCCACHE_DIR }}
@@ -267,21 +268,21 @@ jobs:
           gecko-disk-v1-${{ env.BROWSER_TARGET }}-${{ steps.gecko-cache-contract.outputs.legacy_digest }}-
     - name: Check whether the restored compiler cache contains objects
       id: gecko-disk-availability
-      if: steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && !inputs.require_native
+      if: steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && !inputs.require_native
       run: python3 agent/packaging/compiler-cache.py available --directory "$SCCACHE_DIR"
     - name: Restore compiler release backup only without an Actions copy
-      if: steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && steps.gecko-disk-availability.outputs.available != 'true' && !inputs.require_native
+      if: steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && steps.gecko-disk-availability.outputs.available != 'true' && !inputs.require_native
       run: python3 agent/packaging/browser-release.py restore-cache "$BROWSER_TARGET" --directory "$SCCACHE_DIR"
     - name: Bootstrap the pinned Mozilla Android toolchain
       working-directory: browser
       timeout-minutes: 30
       run: set -o pipefail; ./mach --no-interactive bootstrap --application-choice mobile_android 2>&1 | tee ../artifacts/bootstrap.log
-      if: steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && !inputs.require_native
+      if: steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && !inputs.require_native
     - name: Bootstrap Mozilla Android resource assembly tools
       working-directory: browser
       timeout-minutes: 30
       run: set -o pipefail; ./mach --no-interactive bootstrap --application-choice mobile_android_artifact_mode 2>&1 | tee ../artifacts/bootstrap-artifact.log
-      if: steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit == 'true'
+      if: steps.component.outputs.hit != 'true' && (steps.geckoview-component.outputs.hit == 'true' || steps.native-component.outputs.hit == 'true')
     - name: Generate the product artwork
       working-directory: browser
       run: python3 taskarian/scripts/render-branding.py
@@ -300,13 +301,34 @@ jobs:
     - name: Build Gecko for the selected architecture
       working-directory: browser
       run: set -o pipefail; ./mach build 2>&1 | tee ../artifacts/gecko-build.log
-      if: (success()) && steps.component.outputs.hit != 'true'
+      if: (success()) && steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true'
+    - name: Select the reproducible Android resource build date
+      if: steps.component.outputs.hit != 'true' && (steps.geckoview-component.outputs.hit == 'true' || steps.native-component.outputs.hit == 'true' || inputs.engine_only)
+      run: |
+        python3 - <<'PYTHON'
+        from datetime import datetime, timezone
+        from pathlib import Path
+        import os, subprocess
+        timestamp = int(subprocess.check_output(['git', 'show', '-s', '--format=%ct', 'HEAD'], text=True))
+        build_date = datetime.fromtimestamp(timestamp, timezone.utc).strftime('%Y%m%d%H%M%S')
+        with Path(os.environ['GITHUB_ENV']).open('a') as output:
+            output.write(f'MOZ_BUILD_DATE={build_date}\n')
+        PYTHON
+    - name: Regenerate current Gecko resources from the verified native engine
+      working-directory: browser
+      # These are the pinned upstream artifact-build TIERS in baseconfig.mk,
+      # excluding android-archive-geckoview: the single Maven publication below
+      # builds the required GeckoView variant without sample or test APKs.
+      run: |
+        set -o pipefail
+        ./mach build artifact pre-export export misc libs android-stage-package tools 2>&1 | tee ../artifacts/gecko-resources.log
+      if: (success()) && steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit == 'true'
     - name: Stage and verify native Gecko libraries
       working-directory: browser
       run: |
         ./mach build stage-package
         python3 ../agent/packaging/android-native-component.py "$BROWSER_TARGET" --publish --directory "$RUNNER_TEMP/android-gecko-artifact"
-      if: (success()) && steps.component.outputs.hit != 'true'
+      if: (success()) && steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true'
       id: stage-gecko
     - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
@@ -314,15 +336,31 @@ jobs:
         path: ${{ runner.temp }}/android-gecko-artifact/
         compression-level: 0
         if-no-files-found: error
-      if: (success()) && steps.component.outputs.hit != 'true'
+      if: (success()) && steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true'
       id: engine-checkpoint
+    - name: Publish only the complete GeckoView Maven module locally
+      working-directory: browser
+      if: (success()) && steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit == 'true'
+      run: set -o pipefail; ./mach gradle :geckoview:publishDebugPublicationToMavenRepository 2>&1 | tee ../artifacts/geckoview-module.log
+    - name: Capture the complete GeckoView Maven module
+      id: geckoview-checkpoint
+      if: (success()) && steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true'
+      run: python3 agent/packaging/android-geckoview-component.py capture "$BROWSER_TARGET" --directory "$RUNNER_TEMP/android-geckoview"
+    - name: Preserve the completed GeckoView module independently
+      if: (success()) && steps.geckoview-checkpoint.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: taskarian-geckoview-${{ env.BROWSER_TARGET }}
+        path: ${{ runner.temp }}/android-geckoview/
+        compression-level: 0
+        if-no-files-found: error
     - name: Release verified native object intermediates before cache backup
-      if: always() && !cancelled() && steps.engine-checkpoint.outcome == 'success' && steps.component.outputs.hit != 'true' && inputs.engine_only && steps.stage-gecko.outputs.license_captured == 'true'
+      if: always() && !cancelled() && steps.engine-checkpoint.outcome == 'success' && steps.geckoview-checkpoint.outcome == 'success' && steps.component.outputs.hit != 'true' && inputs.engine_only && steps.stage-gecko.outputs.license_captured == 'true'
       working-directory: browser
       run: ./mach clobber
     - name: Record native cache hits and flush the completed disk objects
       id: gecko-cache-state
-      if: always() && !cancelled() && !inputs.require_native && steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && steps.gecko-cache-contract.outputs.digest != '' && env.SCCACHE_PATH != ''
+      if: always() && !cancelled() && !inputs.require_native && steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && steps.gecko-cache-contract.outputs.digest != '' && env.SCCACHE_PATH != ''
       run: |
         "$SCCACHE_PATH" --show-stats --stats-format=json > "$RUNNER_TEMP/sccache-gecko.json"
         "$SCCACHE_PATH" --show-stats >> "$GITHUB_STEP_SUMMARY"
@@ -344,7 +382,7 @@ jobs:
         GH_TOKEN: ${{ github.token }}
       run: python3 agent/packaging/compiler-cache.py save sccache "$BROWSER_TARGET" --contract "$RUNNER_TEMP/gecko-cache-contract.json" --directory "$SCCACHE_DIR"
     - name: Upload actual Gecko compiler cache statistics
-      if: always() && !cancelled() && !inputs.require_native && steps.component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && steps.gecko-cache-contract.outputs.digest != ''
+      if: always() && !cancelled() && !inputs.require_native && steps.component.outputs.hit != 'true' && steps.geckoview-component.outputs.hit != 'true' && steps.native-component.outputs.hit != 'true' && steps.gecko-cache-contract.outputs.digest != ''
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: gecko-compiler-cache-statistics
@@ -356,6 +394,19 @@ jobs:
         GH_TOKEN: ${{ github.token }}
       run: python3 agent/packaging/browser-release.py publish-engine "$BROWSER_TARGET" --directory "$RUNNER_TEMP/android-gecko-artifact"
       id: publish-engine
+    - name: Publish the complete GeckoView component independently
+      id: publish-geckoview
+      if: always() && !cancelled() && steps.publish-engine.outcome == 'success' && steps.geckoview-checkpoint.outcome == 'success'
+      run: python3 agent/packaging/android-geckoview-component.py publish "$BROWSER_TARGET" --directory "$RUNNER_TEMP/android-geckoview"
+    - name: Configure application assembly with the complete prebuilt GeckoView module
+      if: (success()) && steps.component.outputs.hit != 'true' && (steps.geckoview-component.outputs.hit == 'true' || inputs.engine_only)
+      working-directory: browser
+      run: |
+        export MOZCONFIG="$RUNNER_TEMP/android-geckoview/mozconfig"
+        printf 'MOZCONFIG=%s\n' "$MOZCONFIG" >> "$GITHUB_ENV"
+        ./mach configure
+        ./mach build buildid.h
+        python3 ../agent/packaging/android-geckoview-component.py stage "$BROWSER_TARGET" --directory "$RUNNER_TEMP/android-geckoview"
     - name: Restore exact app-native dependencies and actual companion licenses
       if: '!inputs.engine_only && (steps.component.outputs.hit != ''true'')'
       run: |
@@ -367,6 +418,21 @@ jobs:
     - name: Reuse exact Android dependency sources by permanent reference
       if: '!inputs.engine_only && (steps.component.outputs.hit != ''true'')'
       run: python3 agent/packaging/browser-release.py android-sources "$BROWSER_TARGET" --directory "$RUNNER_TEMP/android-leaves/library-source"
+    - name: Verify release assembly uses the complete GeckoView prebuilt
+      if: (success()) && steps.component.outputs.hit != 'true'
+      working-directory: browser
+      run: |
+        set -o pipefail
+        ./mach gradle :fenix:assembleRelease --dry-run 2>&1 | tee ../artifacts/geckoview-consumer-plan.log
+        python3 ../agent/packaging/android-geckoview-component.py check-plan "$BROWSER_TARGET" --plan ../artifacts/geckoview-consumer-plan.log
+    - name: Verify the prebuilt module's native source and license integration
+      if: (success()) && inputs.engine_only && steps.component.outputs.hit != 'true'
+      working-directory: browser
+      run: |
+        set -o pipefail
+        ./mach gradle :fenix:releaseOssLicensesTask :fenix:stageTaskarianDependencySources --dry-run 2>&1 | tee ../artifacts/geckoview-legal-plan.log
+        python3 ../agent/packaging/android-geckoview-component.py check-plan "$BROWSER_TARGET" --plan ../artifacts/geckoview-legal-plan.log --metadata-only
+        ./mach gradle :fenix:releaseOssLicensesTask :fenix:stageTaskarianDependencySources 2>&1 | tee ../artifacts/geckoview-legal-build.log
     - name: Assemble the release browser
       working-directory: browser
       run: set -o pipefail; ./mach gradle :fenix:assembleRelease --profile 2>&1 | tee ../artifacts/apk-build.log
@@ -381,14 +447,14 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: python3 agent/packaging/browser-release.py publish-resources "$BROWSER_TARGET" --directory candidate
-      if: '!inputs.engine_only'
+      if: '!inputs.engine_only && steps.component.outputs.hit != ''true'''
     - name: Publish the complete application independently
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         python3 agent/packaging/browser-release.py dependencies "$BROWSER_TARGET" --directory "$RUNNER_TEMP/android-leaves" --output "$RUNNER_TEMP/browser-dependencies.json"
         python3 agent/packaging/application.py publish "$BROWSER_TARGET" --directory candidate --dependencies "$RUNNER_TEMP/browser-dependencies.json"
-      if: '!inputs.engine_only'
+      if: '!inputs.engine_only && steps.component.outputs.application_hit != ''true'''
     - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: ${{ steps.component.outputs.artifact }}

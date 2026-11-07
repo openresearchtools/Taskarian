@@ -149,7 +149,8 @@ def native_inputs(revision, target, legacy_android_module=False,
         if path == COLLECTOR or path.startswith(APPLICATION_PATHS) or '/__pycache__/' in path:
             continue
         if path in component.NATIVE_POLICY_FILES and not legacy_artifact_policy:
-            # These exact delimited additions only assemble Linux resources.
+            # These exact delimited additions only assemble resources or select
+            # a prebuilt Java/AAR consumer; native producers do not enable them.
             # Preserve every native recipe byte outside the proven blocks.
             header, raw_path = entry.split(b'\t', 1)
             mode, kind, _identity = header.split()

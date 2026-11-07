@@ -33,6 +33,47 @@ plugins {
     alias(libs.plugins.spotless)
 }
 
+// Taskarian prebuilt GeckoView Maven dependency BEGIN
+if (System.getenv('TASKARIAN_GECKOVIEW_MAVEN_COORDINATE')) {
+    def coordinate = System.getenv('TASKARIAN_GECKOVIEW_MAVEN_COORDINATE')
+    def repository = System.getenv('TASKARIAN_GECKOVIEW_MAVEN_REPOSITORY')
+    def parts = coordinate.split(':')
+    if (parts.length != 3 || parts[0] != 'org.mozilla.geckoview' ||
+            !parts[1].startsWith('geckoview') || !repository) {
+        throw new GradleException('A verified GeckoView Maven module and repository are required')
+    }
+    def target = gradle.mozconfig.substs.ANDROID_CPU_ARCH == 'x86_64' ? 'android-x86_64' : 'android'
+    def verified = providers.exec {
+        commandLine 'python3', "${projectDir.parentFile}/agent/packaging/android-geckoview-component.py",
+            'source-coordinate', target
+    }.standardOutput.asText.get().trim()
+    if (verified != coordinate) {
+        throw new GradleException('GeckoView Maven substitution requires the verified permanent producer')
+    }
+    // App configuration and the actual built omni are prepared before Gradle.
+    // About keeps its normal mach dependency without rebuilding that module.
+    ['machConfigure', 'machBuildFaster', 'machStagePackage'].each { taskName ->
+        tasks.named(taskName).configure { enabled = false }
+    }
+    allprojects {
+        repositories.exclusiveContent {
+            forRepository {
+                maven {
+                    url = uri(repository)
+                    metadataSources { gradleMetadata(); mavenPom() }
+                }
+            }
+            filter { includeModule(parts[0], parts[1]) }
+        }
+        configurations.configureEach {
+            resolutionStrategy.dependencySubstitution {
+                substitute project(':geckoview') using module(coordinate) because 'reuse the verified complete GeckoView module'
+            }
+        }
+    }
+}
+// Taskarian prebuilt GeckoView Maven dependency END
+
 def tryInt = { string ->
     if (string == null) {
         return string

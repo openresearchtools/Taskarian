@@ -41,7 +41,7 @@ def version(revision, native=False):
     return text(revision, path)
 
 
-def inputs(kind, target, revision=None, companion=None):
+def inputs(kind, target, revision=None, companion=None, *, legacy_release_module=False):
     revision = revision or source()
     browser = module('browser-component')
     if kind == 'gecko':
@@ -62,6 +62,9 @@ def inputs(kind, target, revision=None, companion=None):
             continue
         if target.startswith('linux') and path.startswith(('browser/mobile/android/', 'browser/taskarian/android/')):
             continue
+        if target.startswith('android') and path == browser.RELEASE_RUNTIME and not legacy_release_module:
+            mode, entry_kind, blob = entry.split(b'\t', 1)[0].split()
+            entry = b' '.join((mode, entry_kind, browser.release_runtime_blob(blob.decode()).encode())) + b'\t' + path.encode()
         entries.append(entry)
     return {'schema': 'taskarian-browser-resources-1', 'target': target,
             'resourceSha256': hashlib.sha256(b'\0'.join(entries)).hexdigest(),
@@ -194,9 +197,98 @@ def restore_engine(directory, target):
     return True
 
 
+def android_pairing(target, directory):
+    """Read exact package expectations from its published, checksummed sidecar."""
+    architecture = 'x86_64' if target == 'android-x86_64' else 'aarch64'
+    termux = 'termux-' + architecture
+    store, application, release = module('component-store'), module('application'), module('release')
+    result = store.lookup('application', termux, application.inputs(termux))
+    if result is None:
+        return None
+    packages = [item for item in result['manifest']['assets'] if item['name'].endswith('.deb')]
+    if len(packages) != 1:
+        raise ValueError('Android requires one published parent Termux package')
+    backend, = packages
+    metadata_name = backend['name'] + '.json'
+    if store.fetch(result, directory, roles=('runtime', 'metadata'), names=[metadata_name]) is None:
+        raise store.StoreUnavailable('Published Termux package metadata is unavailable')
+    metadata = json.loads((Path(directory) / metadata_name).read_text())
+    os_identity = metadata.get('components', {}).get('os', {})
+    if (metadata.get('asset') != backend['name'] or metadata.get('sha256') != backend['sha256'] or
+            metadata.get('revision') != source() or result['manifest']['sourceCommit'] != source() or
+            metadata.get('platform') != 'android' or metadata.get('architecture') != architecture or
+            metadata.get('version') != version(source()) or not os_identity.get('embedded')):
+        raise ValueError('Published Termux package metadata differs from its actual application identity')
+    pairing = release.validate_termux_update({
+        'schema': 2, 'productVersion': metadata['version'], 'sourceCommit': metadata['revision'],
+        'integrationIteration': metadata.get('integrationIteration', False),
+        'bootstrapSha256': hashlib.sha256(subprocess.check_output(
+            ['git', 'show', source() + ':agent/src/server/platform/termux/updates-bootstrap.mjs'], cwd=ROOT)).hexdigest(),
+        'architecture': architecture, 'apkAbi': 'x86_64' if architecture == 'x86_64' else 'arm64-v8a',
+        'packages': [{'name': 'taskarian', 'version': metadata['version'], 'architecture': architecture,
+                      'sourceCommit': metadata['revision'], 'sha256': backend['sha256']}],
+        'components': {'os': {key: os_identity[key] for key in
+            ('version', 'architecture', 'sourceCommit', 'installedManifestSha256')}}})
+    return pairing, result
+
+
+def restore_android_resources(directory, target):
+    """Reuse the original APK only for its exact source, version and companion."""
+    store, browser, application = module('component-store'), module('browser-component'), module('application')
+    result = store.lookup('application', target, application.inputs(target))
+    application_hit = result is not None
+    with tempfile.TemporaryDirectory(prefix='android-pairing-', dir=Path(directory).parent) as temporary:
+        paired = android_pairing(target, Path(temporary))
+    if paired is None:
+        if application_hit:
+            raise store.StoreUnavailable('Published Android application has no available paired Termux metadata; retry without rebuilding')
+        return False
+    pairing, companion = paired
+    if result is None:
+        # The resource checkpoint may have completed before final app publication.
+        for legacy in (False, True):
+            wanted = inputs('browser-resources', target, companion=pairing, legacy_release_module=legacy)
+            result = store.lookup('browser-resources', target, wanted)
+            if result is not None:
+                break
+    if result is None:
+        return False
+    if result['manifest']['sourceCommit'] != source() or result['manifest']['version'] != version(source()):
+        raise ValueError('Android resource producer source or embedded product version differs')
+    restored = store.fetch(result, directory, roles=('runtime', 'metadata', 'build-support', 'legal'))
+    if restored is None:
+        raise store.StoreUnavailable('Published Android resources are unavailable; retry without rebuilding')
+    checkpoint_inventory(restored, directory)
+    browser.verify_checksums(directory)
+    browser.record_android_equivalence(directory, target)
+    browser.verify(directory, target, browser.fingerprint(target))
+    app, = Path(directory).glob('taskarian_*.apk')
+    with zipfile.ZipFile(app) as archive:
+        actual = module('release').validate_termux_update(json.loads(archive.read('assets/termux-update.json')))
+    if actual != pairing:
+        raise ValueError('Published APK expectations differ from the actual paired Termux package')
+    remember(restored, directory, restored['manifest']['component'])
+    if restored['manifest']['component'] == 'application':
+        resources = [item for item in restored['manifest'].get('dependencies', [])
+                     if item['manifestName'].startswith('component-browser-resources-' + target + '-')]
+        if len(resources) != 1:
+            raise ValueError('Published Android application lacks its exact browser resource owner')
+        remember(resources[0], directory, 'browser-resources')
+    remember(companion, directory, 'termux-application')
+    if os.environ.get('GITHUB_OUTPUT'):
+        with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+            output.write('application_hit=' + str(application_hit).lower() + '\n')
+    print('Reused complete Android application resources:', restored['url'], flush=True)
+    return True
+
+
 def restore_resources(directory, target):
     if target.startswith('android'):
-        return False  # Final APK lookup occurs after its exact companion is known.
+        try:
+            return restore_android_resources(directory, target)
+        except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, zipfile.BadZipFile) as error:
+            raise module('component-store').StoreUnavailable(
+                'Published Android resources failed verification; retry without rebuilding: ' + str(error)) from error
     store, browser = module('component-store'), module('browser-component')
     result = store.restore('browser-resources', target, inputs('browser-resources', target), directory,
                            roles=('runtime', 'metadata', 'build-support', 'legal'), requested_source=source())
@@ -293,7 +385,7 @@ def dependencies(directories):
                 visit(json.loads(file.read_text()))
             except (ValueError, UnicodeError):
                 continue
-    for name in ('GECKO', 'BROWSER_RESOURCES', 'TERMUX_APPLICATION'):
+    for name in ('GECKO', 'GECKOVIEW', 'BROWSER_RESOURCES', 'TERMUX_APPLICATION'):
         if os.environ.get('TASKARIAN_' + name + '_RELEASE_REFERENCE'):
             visit(json.loads(Path(os.environ['TASKARIAN_' + name + '_RELEASE_REFERENCE']).read_text()))
     return list(found.values())
@@ -610,6 +702,9 @@ def publish(kind, directory, target):
         if kind != 'gecko' and os.environ.get('TASKARIAN_ANDROID_LIBRARY_SOURCE_REFERENCE'):
             dependencies.append(json.loads(Path(os.environ['TASKARIAN_ANDROID_LIBRARY_SOURCE_REFERENCE']).read_text())['release'])
         ref = os.environ.get('TASKARIAN_GECKO_RELEASE_REFERENCE')
+        if kind != 'gecko' and ref:
+            dependencies.append(json.loads(Path(ref).read_text()))
+        ref = os.environ.get('TASKARIAN_GECKOVIEW_RELEASE_REFERENCE')
         if kind != 'gecko' and ref:
             dependencies.append(json.loads(Path(ref).read_text()))
         result = store.publish(kind, target, version(revision, kind == 'gecko'), identity, staging,

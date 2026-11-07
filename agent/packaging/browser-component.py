@@ -28,12 +28,14 @@ VERIFIER = 'agent/packaging/browser-component.py'
 EQUIVALENCE = 'browser-input-equivalence.json'
 NATIVE_ENGINE_RECEIPT = 'browser-native-engine.json'
 NATIVE_POLICY_FILES = (
+    'browser/build.gradle',
     'browser/taskarian/scripts/build-linux-external.sh',
     'browser/taskarian/ci/build-browser-artifact.sh',
     'browser/python/mozbuild/mozbuild/artifacts.py',
     'browser/toolkit/mozapps/extensions/moz.build',
 )
 PRODUCT_VERSION = 'browser/taskarian/config/version.txt'
+RELEASE_RUNTIME = 'agent/packaging/release.py'
 RESOURCE_GENERATORS = (
     'browser/AGENTS.md',
     'browser/taskarian/README.md',
@@ -167,12 +169,13 @@ def input_listing(target, include_verifier):
 
 
 def fingerprint(target, legacy_verifier=None, legacy_android_module=None,
-                legacy_linux_workflow=None, legacy_fixture_blobs=None):
+                legacy_linux_workflow=None, legacy_fixture_blobs=None, legacy_release_module=None):
     if legacy_android_module and target.startswith('android'):
         raise ValueError('Android APK resources cannot use Linux input equivalence')
     substitutions = {path: blob for path, blob in (
         (VERIFIER, legacy_verifier), (ANDROID_ONLY_MODULE, legacy_android_module),
-        ('.github/builders/linux.yml', legacy_linux_workflow)) if blob}
+        ('.github/builders/linux.yml', legacy_linux_workflow),
+        (RELEASE_RUNTIME, legacy_release_module)) if blob}
     if legacy_fixture_blobs:
         if not isinstance(legacy_fixture_blobs, dict) or set(legacy_fixture_blobs) - set(FIXTURE_METADATA):
             raise ValueError('Only declared fixture metadata can use historical lock identities')
@@ -189,6 +192,9 @@ def fingerprint(target, legacy_verifier=None, legacy_android_module=None,
             if path in encoded:
                 entry = f'100644 {encoded[path]} 0\t'.encode() + path
                 found.add(path)
+            elif target.startswith('android') and path.decode() == RELEASE_RUNTIME:
+                mode, blob, stage = entry.split(b'\t', 1)[0].split()
+                entry = b' '.join((mode, release_runtime_blob(blob.decode()).encode(), stage)) + b'\t' + path
         entries.append(entry)
     if found != encoded.keys():
         raise ValueError('Missing tracked historical input')
@@ -267,11 +273,63 @@ def artifact_policy_base(data):
             output.append(line)
     if inside:
         raise ValueError('Unclosed artifact-only policy block')
-    return b''.join(output)
+    return native_gradle_base(b''.join(output))
+
+
+def native_gradle_base(data):
+    """Strip only the reviewed, inactive-in-native-builds Maven consumer block."""
+    start = b'// Taskarian prebuilt GeckoView Maven dependency BEGIN\n'
+    end = b'// Taskarian prebuilt GeckoView Maven dependency END\n'
+    if start not in data and end not in data:
+        return data
+    if data.count(start) != 1 or data.count(end) != 1:
+        raise ValueError('Invalid GeckoView Maven consumer boundaries')
+    first, last = data.index(start), data.index(end) + len(end)
+    if (last <= first or data[last:last + 1] != b'\n' or
+            hashlib.sha256(data[first:last]).hexdigest() !=
+            '1b1213107ae751eb87831e28495153fb0b2d285defe04dcda5a6dc0abd6dfbf8'):
+        raise ValueError('GeckoView Maven consumer changed; review its native input scope')
+    return data[:first] + data[last + 1:]
 
 
 def blob_identity(data):
     return hashlib.sha1(f'blob {len(data)}\0'.encode() + data).hexdigest()
+
+
+@cache
+def release_runtime_blob(blob):
+    """Hash the existing companion API, independently of release-note prose."""
+    tree = ast.parse(network_command(['git', 'cat-file', 'blob', blob]))
+    wanted = {'validate_termux_update', 'termux_os_identity', 'TERMUX_UPDATE_ASSET',
+              'TERMUX_BOOTSTRAP_ASSET', 'TERMUX_PREPARER_ASSET', 'TERMUX_OS_FILES'}
+    declarations = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            declarations[node.name] = node
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    declarations[target.id] = node
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                declarations[alias.asname or alias.name.split('.')[0]] = node
+    if not wanted <= declarations.keys():
+        raise ValueError('Android companion API declarations are missing')
+    selected = {}
+    pending = list(wanted)
+    while pending:
+        name = pending.pop()
+        if name in selected or name not in declarations:
+            continue
+        node = declarations[name]
+        selected[name] = node
+        pending.extend(value.id for value in ast.walk(node)
+                       if isinstance(value, ast.Name) and isinstance(value.ctx, ast.Load))
+    nodes = {node.lineno: node for node in selected.values()}
+    payload = ast.dump(ast.Module(body=[nodes[line] for line in sorted(nodes)], type_ignores=[]),
+                       include_attributes=False).encode()
+    return blob_identity(b'taskarian-android-companion-api-1\0' + payload)
 
 
 @cache
@@ -586,8 +644,37 @@ def matching_input(directory, target, recorded, digest, producer, legacy_android
             receipt.get('producerManifestSha256') != hashlib.sha256(manifest.read_bytes()).hexdigest() or
             fingerprint(target, receipt.get('legacyVerifierBlob'),
                         receipt.get('legacyAndroidModuleBlob', legacy_android_module),
-                        receipt.get('legacyLinuxWorkflowBlob'), fixture_blobs) != recorded):
+                        receipt.get('legacyLinuxWorkflowBlob'), fixture_blobs,
+                        receipt.get('legacyReleaseModuleBlob')) != recorded):
         raise ValueError('Browser source equivalence does not match this source')
+    if receipt.get('legacyReleaseModuleBlob') and source_blob(producer, RELEASE_RUNTIME) != receipt['legacyReleaseModuleBlob']:
+        raise ValueError('Companion API receipt differs from its actual producer Git object')
+
+
+def record_android_equivalence(directory, target):
+    """Keep the original manifest when only the input projection was refined."""
+    directory = Path(directory)
+    manifest_file = directory / 'build-manifest.json'
+    manifest = json.loads(manifest_file.read_text())
+    current = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+    if manifest.get('source') != current:
+        raise ValueError('Android resource reuse requires the exact original source revision')
+    digest = fingerprint(target)
+    recorded = manifest.get('browser_input_sha256')
+    if recorded == digest or (directory / EQUIVALENCE).exists():
+        return
+    legacy = source_blob(current, RELEASE_RUNTIME)
+    if fingerprint(target, legacy_release_module=legacy) != recorded:
+        raise ValueError('Android resource inputs differ beyond the companion API projection')
+    receipt = {'schema': 1, 'target': target, 'producerSource': current,
+               'producerFingerprint': recorded, 'compileFingerprint': digest,
+               'producerManifestSha256': hashlib.sha256(manifest_file.read_bytes()).hexdigest(),
+               'legacyReleaseModuleBlob': legacy,
+               'legacyFixtureLockBlobs': {path: source_blob(current, path) for path in FIXTURE_METADATA}}
+    file = directory / EQUIVALENCE
+    file.write_text(json.dumps(receipt, indent=2) + '\n')
+    with (directory / 'SHA256SUMS').open('a') as output:
+        output.write(hashlib.sha256(file.read_bytes()).hexdigest() + '  ' + file.name + '\n')
 
 
 def verify_android_resources(apk):
@@ -663,12 +750,19 @@ def verify(directory, target, digest, legacy_android_module=None):
             raise ValueError('Android component inputs do not match this source')
         if not re.fullmatch('[0-9a-f]{40}', manifest.get('source', '')):
             raise ValueError('Android component has no producing source revision')
+        if (manifest.get('product_version') != (ROOT / PRODUCT_VERSION).read_text().strip() or
+                manifest.get('package_id') != 'com.taskarian' or not manifest.get('publisher_signed')):
+            raise ValueError('Android component product version or publisher identity differs')
         apks = list(directory.glob('*.apk'))
         if len(apks) != 1 or manifest.get('apks', {}).get(apks[0].name) is None:
             raise ValueError('Expected one recorded production APK')
+        with apks[0].open('rb') as stream:
+            if hashlib.file_digest(stream, 'sha256').hexdigest() != manifest['apks'][apks[0].name]:
+                raise ValueError('Android component APK differs from its original build manifest')
         verify_android_resources(apks[0])
         with zipfile.ZipFile(apks[0]) as archive:
             pairing = validate_termux_update(json.loads(archive.read(TERMUX_UPDATE_ASSET)),
+                                             version=(ROOT / PRODUCT_VERSION).read_text().strip(),
                                              abi=manifest['architecture'])
             if hashlib.sha256(archive.read(TERMUX_BOOTSTRAP_ASSET)).hexdigest() != pairing['bootstrapSha256']:
                 raise ValueError('APK update bootstrap does not match its paired manifest')
@@ -1030,7 +1124,7 @@ def main():
         hit = False
     with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
         output.write(f'hit={str(hit).lower()}\ndigest={digest}\nartifact={name}\n')
-    print('Matching verified browser artifact found' if hit else 'Compiling changed browser inputs')
+    print('Matching verified browser artifact found' if hit else 'No matching completed browser resources found')
 
 
 if __name__ == '__main__':

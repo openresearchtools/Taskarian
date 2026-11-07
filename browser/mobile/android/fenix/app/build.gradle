@@ -844,7 +844,12 @@ tasks.register('stageTaskarianDependencySources') {
             if (!geckoview) {
                 throw new GradleException('The complete GeckoView module requires its verified permanent source owner')
             }
-            ids = ids.findAll { it.toString() != geckoview }
+            def coordinate = geckoview.split(':')
+            // Snapshot display IDs also contain their publication timestamp;
+            // the public Maven identity retains the exact base version.
+            ids = ids.findAll {
+                it.group != coordinate[0] || it.module != coordinate[1] || it.version != coordinate[2]
+            }
         }
         def removedSdkGroups = ['com.google.android.gms', 'com.google.android.play',
             'com.google.firebase', 'com.android.installreferrer']

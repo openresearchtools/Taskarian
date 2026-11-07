@@ -41,7 +41,7 @@ Android installers do not contain this Arch packaging overlay.
 
 ## Installed verification
 
-Version `153.6.6-1` was installed from the signed `nightly` pacman catalogue on
+Versions `153.6.6-1` and `153.6.6-2` were installed from the signed `nightly` pacman catalogue on
 an Omarchy ARM64 host with 16 KiB memory pages. The packaged private Node.js,
 Podman, crun and helpers ran without a distribution-specific runtime patch.
 The corresponding prerelease contains both native Arch architectures and the
@@ -66,3 +66,22 @@ verification covered:
 These results cover the ARM64 installation and software display path. The
 `x86_64` package passed packaging and payload integrity checks, but was not
 installed on this ARM64 host. Hardware graphics acceleration was not exercised.
+
+The `153.6.6-2` retest confirmed the guest's installed `taskarian-backend` version
+was `153.6.6` through its graphical terminal, then repeated display resize,
+close/reopen, power off/on and trusted Files access. The host's native Pi skill
+loader discovered the packaged `omarchy` skill without diagnostics, and the
+normal managed Pi package registration included it. Both CPU packages were
+checked against their source DEBs: only the seven reviewed Pi/license metadata
+files changed, with the skill/source/license additions recorded in provenance.
+
+A separate stock Android 17 ARM64 Cuttlefish guest was exercised with QEMU/KVM,
+8 virtual CPUs and 16 GiB RAM. The Android APK and native Termux backend were both
+`153.6.6`, with the backend installed from the signed central APT nightly channel.
+Normal app enrollment, saved Termux browser-control consent, Agent UI, ordinary
+browser navigation/DOM access and the packaged graphical desktop/terminal worked.
+The browser viewer uses localhost noVNC/websockify and QEMU's VNC console; the
+QEMU backend does not supply Cuttlefish WebRTC video. The stock Android kernel
+was retained. Native Wacom input with Android's per-device IDC configuration and
+a lossless RFB pixel-format mapping were required for accurate pointer input and
+correct colours. Guest data and enrollment survived the setup restart.

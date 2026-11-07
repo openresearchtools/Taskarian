@@ -15,6 +15,7 @@ import copy
 import gzip
 import hashlib
 import io
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -265,7 +266,8 @@ def normalized_member(member: tarfile.TarInfo, rules: dict, epoch: int) -> tarfi
     return result
 
 
-def build_package(deb: Path, raw_rules: dict, output: Path, pkgrel: str = "1", compression: str = "zst") -> tuple[Path, dict]:
+def build_package(deb: Path, raw_rules: dict, output: Path, pkgrel: str = "1", compression: str = "zst",
+                  omarchy_skill: Path | None = None) -> tuple[Path, dict]:
     members = ar_members(deb)
     control, control_files = read_control(deb, members)
     deb_arch = control["Architecture"]
@@ -291,6 +293,13 @@ def build_package(deb: Path, raw_rules: dict, output: Path, pkgrel: str = "1", c
         raise RepackageError("SOURCE_DATE_EPOCH must be nonnegative")
     rules["depends"] = reviewed_dependencies(control, rules)
     installed_size, paths, payload_metadata = 0, {}, {}
+    skill_owner, overlay, skill_pin, payload_files = None, {}, None, {}
+    if rules.get('omarchy_skill'):
+        if omarchy_skill is None:
+            raise RepackageError('Taskarian Arch packages require a verified stable Omarchy skill snapshot')
+        spec = importlib.util.spec_from_file_location('arch_omarchy_skill', Path(__file__).with_name('omarchy-skill.py'))
+        skill_owner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(skill_owner)
     metadata_paths = {"usr/lib/taskarian/" + name for name in ("build-platform.json", "runtime-default.json")}
     with deb_tar(deb, members, "data") as archive:
         for member in archive:
@@ -304,6 +313,17 @@ def build_package(deb: Path, raw_rules: dict, output: Path, pkgrel: str = "1", c
                 installed_size += normalized.size
                 if normalized.name in metadata_paths:
                     payload_metadata[normalized.name] = json.load(archive.extractfile(member))
+                if skill_owner and normalized.name in skill_owner.REQUIRED:
+                    if member.size > 256 * 1024 ** 2:
+                        raise RepackageError('Unexpectedly large Pi/license metadata')
+                    payload_files[normalized.name] = archive.extractfile(member).read()
+    if skill_owner:
+        overlay, skill_pin = skill_owner.overlay(omarchy_skill, payload_files, control['Version'])
+        for name, data in overlay.items():
+            safe_path(name)
+            if name in paths and name not in payload_files:
+                raise RepackageError('Omarchy overlay would replace an unreviewed Debian payload: ' + name)
+            installed_size += len(data) - len(payload_files.get(name, b''))
     install = None
     if rules.get("maintainer_adapter") == "taskarian-linux-v1":
         if control["Package"] != "taskarian" or set(payload_metadata) != metadata_paths:
@@ -356,7 +376,27 @@ def build_package(deb: Path, raw_rules: dict, output: Path, pkgrel: str = "1", c
                         if not normalized.name or normalized.name in emitted:
                             continue
                         emitted.add(normalized.name)
-                        target.addfile(normalized, source.extractfile(member) if member.isfile() else None)
+                        if normalized.name in overlay:
+                            normalized.size = len(overlay[normalized.name])
+                            target.addfile(normalized, io.BytesIO(overlay[normalized.name]))
+                        else:
+                            target.addfile(normalized, source.extractfile(member) if member.isfile() else None)
+                for name in sorted(overlay):
+                    if name in emitted:
+                        continue
+                    for parent in reversed(PurePosixPath(name).parents):
+                        value = str(parent)
+                        if value == '.' or value in emitted:
+                            continue
+                        if value in paths and paths[value] != 'dir':
+                            raise RepackageError('Omarchy overlay parent is not a directory: ' + value)
+                        item = tarfile.TarInfo(value); item.type = tarfile.DIRTYPE
+                        item.mode, item.mtime = 0o755, epoch
+                        target.addfile(item); emitted.add(value)
+                    data = overlay[name]
+                    item = tarfile.TarInfo(name); item.size = len(data)
+                    item.mode, item.mtime = 0o644, epoch
+                    target.addfile(item, io.BytesIO(data)); emitted.add(name)
         finally:
             stream.close()
         if process and process.wait() != 0:
@@ -379,6 +419,10 @@ def build_package(deb: Path, raw_rules: dict, output: Path, pkgrel: str = "1", c
                   "native_install_sha256": hashlib.sha256(install).hexdigest() if install else None,
                   "rules_sha256": hashlib.sha256(json.dumps(raw_rules, sort_keys=True).encode()).hexdigest(),
                   "path_mappings": rules.get("path_mappings", {})}
+    if skill_pin:
+        provenance['omarchy_skill'] = skill_pin
+        provenance['arch_overlay_sha256'] = {name: hashlib.sha256(data).hexdigest()
+                                            for name, data in sorted(overlay.items())}
     return result, provenance
 
 
@@ -389,9 +433,11 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--pkgrel", default="1")
     parser.add_argument("--compression", choices=("zst", "gz"), default="zst")
+    parser.add_argument("--omarchy-skill-directory", type=Path)
     args = parser.parse_args(argv)
     try:
-        result, provenance = build_package(args.deb, json.loads(args.rules.read_text()), args.output, args.pkgrel, args.compression)
+        result, provenance = build_package(args.deb, json.loads(args.rules.read_text()), args.output,
+                                           args.pkgrel, args.compression, args.omarchy_skill_directory)
         result.with_name(result.name + ".provenance.json").write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n")
         print(result)
         return 0

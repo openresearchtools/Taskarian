@@ -32,6 +32,13 @@ DEBs before the initial upload. It does not download the new release again or
 rebuild its compiled components. Debian and Arch packages share the release's
 stable/prerelease flag and source/license index.
 
+Arch/Omarchy packages additionally include the official Omarchy skill in bundled
+Pi. Each publication resolves the latest stable upstream release once for both
+CPU architectures, retaining all topic guides, the full MIT license, exact source
+revision and checksums. The skill appears through Pi's normal package discovery;
+its attribution is also available in Taskarian's component licenses. Debian and
+Android installers do not contain this Arch packaging overlay.
+
 ## Installed verification
 
 Version `153.6.6-1` was installed from the signed `nightly` pacman catalogue on

@@ -179,13 +179,16 @@ jobs:
       run: python3 -B agent/packaging/release_version.py check
     - name: Package native Arch and Omarchy installers from the verified Linux DEBs
       env:
+        GH_TOKEN: ${{ github.token }}
         RELEASE_TAG: ${{ steps.release.outputs.tag }}
         SOURCE_DATE_EPOCH: '0'
       run: |
         sudo apt-get update
         sudo apt-get install --yes --no-install-recommends python3-zstandard zstd
+        python3 -B agent/packaging/arch/omarchy-skill.py --output "$RUNNER_TEMP/omarchy-skill"
         python3 -B agent/packaging/arch/release.py \
           --input-directory release --release-tag "$RELEASE_TAG" \
+          --omarchy-skill-directory "$RUNNER_TEMP/omarchy-skill" \
           --pkgrel 1 --output "$RUNNER_TEMP/arch-release"
         python3 - <<'PY'
         import hashlib, os, shutil

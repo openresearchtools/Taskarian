@@ -40,7 +40,8 @@ def checksums(path: Path) -> dict[str, str]:
 
 
 def prepare(input_directory: Path, output: Path, tag: str, repository: str,
-            pkgrel: str = "1", architectures: list[str] | None = None) -> list[Path]:
+            pkgrel: str = "1", architectures: list[str] | None = None,
+            omarchy_skill: Path | None = None) -> list[Path]:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("Specify the GitHub owner/repository")
     sums = checksums(input_directory / "SHA256SUMS")
@@ -84,11 +85,13 @@ def prepare(input_directory: Path, output: Path, tag: str, repository: str,
         if (control["Architecture"] != architecture or control["Package"] != record["Package"]
                 or control["Version"] != record["Version"]):
             raise ValueError("Debian control differs from publisher manifest: " + source.name)
-        package, provenance = module.build_package(source, rules, output, pkgrel, "zst")
+        package, provenance = module.build_package(source, rules, output, pkgrel, "zst", omarchy_skill)
         provenance.update(source_repository=repository, source_release_tag=tag,
                           source_release_asset_url=f"https://github.com/{repository}/releases/download/{quote(tag, safe='')}/{source.name}",
                           source_release_manifest_sha256=manifest_digest,
                           source_commit=manifest["sourceCommit"])
+        provenance['packaging_source_commit'] = subprocess.check_output(
+            ['git', '-C', str(Path(__file__).resolve().parents[3]), 'rev-parse', 'HEAD'], text=True).strip()
         directory = Path(__file__).parent
         provenance["packaging_sources_sha256"] = {str(path.relative_to(directory)): digest(path)
             for path in sorted(directory.rglob("*")) if path.is_file() and path.suffix != ".pyc"}
@@ -110,10 +113,11 @@ def main(argv=None):
     parser.add_argument("--pkgrel", default="1")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--architecture", choices=("amd64", "arm64"), action="append")
+    parser.add_argument("--omarchy-skill-directory", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         created = prepare(args.input_directory, args.output, args.release_tag,
-                          args.repository, args.pkgrel, args.architecture)
+                          args.repository, args.pkgrel, args.architecture, args.omarchy_skill_directory)
         print(f"Prepared {len(created)} Arch release assets; normal publisher owns upload")
         return 0
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.SubprocessError) as error:

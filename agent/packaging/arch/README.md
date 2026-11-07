@@ -6,9 +6,11 @@ It uploads both formats in the same new release. It does not rebuild the
 application or components, download them again, or change an older release.
 
 ```sh
+python3 agent/packaging/arch/omarchy-skill.py --output /path/to/omarchy-skill
 python3 agent/packaging/arch/release.py \
   --input-directory /path/to/verified-release \
-  --release-tag v153.6.5 \
+  --release-tag v153.6.6 \
+  --omarchy-skill-directory /path/to/omarchy-skill \
   --output /path/to/arch-output
 ```
 
@@ -42,12 +44,28 @@ identity derived from the shipped build stamp and runtime default. Changes to
 script behavior stop assembly. Pacman's `backup` protects the AppArmor profile;
 Arch's existing desktop/icon/font hooks handle their own caches.
 
-All regular payload bytes, modes, symlinks, offline full licenses and notices
-are retained. Ownership is normalized to root and timestamps use
+Compiled payload bytes, modes and symlinks are retained. The reviewed Omarchy
+overlay adds the official Omarchy skill to Pi's existing package manifest,
+including all Markdown topic guides, the full upstream MIT license and an exact
+source receipt. The publisher resolves the latest non-prerelease Omarchy tag
+once, pins its actual commit, verifies each Git blob and records SHA-256 hashes;
+both CPU packages use that same snapshot. Missing, changed or unsupported source
+layouts fail packaging. No host skill symlink or live download at application
+startup is used. Debian and Android packages do not receive this overlay.
+
+The overlay appends attribution to existing notices, adds the full license and
+source revision to both installed license inventories, and regenerates About
+with the existing license renderer. Other license records and component source
+provenance are retained. Pi's normal managed package registration discovers the
+additional skill; its upstream engine is unchanged. A user-customized skill
+selection remains under the existing registration policy.
+
+Ownership is normalized to root and timestamps use
 `SOURCE_DATE_EPOCH` (default 0). No payload is extracted onto the packaging host,
 no Debian library-path mapping is guessed, and special/setuid files are
 rejected. Provenance identifies the original installer, release, source commit,
-reviewed scripts, native adapter and packaging source checksums. Full component
+reviewed scripts, native adapter, packaging commit/source checksums and the
+Omarchy skill's immutable source/license inventory. Full component
 sources retain their original permanent release links.
 
 The initial archive reader/converter was adapted from

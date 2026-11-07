@@ -286,8 +286,9 @@ def native_gradle_base(data):
         raise ValueError('Invalid GeckoView Maven consumer boundaries')
     first, last = data.index(start), data.index(end) + len(end)
     if (last <= first or data[last:last + 1] != b'\n' or
-            hashlib.sha256(data[first:last]).hexdigest() !=
-            '1b1213107ae751eb87831e28495153fb0b2d285defe04dcda5a6dc0abd6dfbf8'):
+            hashlib.sha256(data[first:last]).hexdigest() not in {
+                '1b1213107ae751eb87831e28495153fb0b2d285defe04dcda5a6dc0abd6dfbf8',
+                'da72786261a11f23c7be524ada9a4b8166f734e50bdc04bb818b5f9bc2ea7fda'}):
         raise ValueError('GeckoView Maven consumer changed; review its native input scope')
     return data[:first] + data[last + 1:]
 

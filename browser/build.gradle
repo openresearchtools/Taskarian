@@ -56,13 +56,12 @@ if (System.getenv('TASKARIAN_GECKOVIEW_MAVEN_COORDINATE')) {
         tasks.named(taskName).configure { enabled = false }
     }
     allprojects {
+        def geckoviewRepository = repositories.maven {
+            url = uri(repository)
+            metadataSources { gradleMetadata(); mavenPom() }
+        }
         repositories.exclusiveContent {
-            forRepository {
-                maven {
-                    url = uri(repository)
-                    metadataSources { gradleMetadata(); mavenPom() }
-                }
-            }
+            forRepositories(geckoviewRepository)
             filter { includeModule(parts[0], parts[1]) }
         }
         configurations.configureEach {

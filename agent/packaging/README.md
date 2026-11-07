@@ -3,8 +3,9 @@
 Release compilation runs in GitHub Actions; the 8 October local setup also uses
 an external data-drive workspace and cached Podman builders. Dispatch `Complete Taskarian candidates`
 on `main` to build ARM64 and x86_64 Android APKs, Linux amd64/arm64 packages,
-and native Termux aarch64/x86_64 packages. The main workflow builds authentication/search/private-Node components,
-Termux and source bundles. It dispatches the exact product commit to these builders:
+and native Termux aarch64/x86_64 packages. The main workflow coordinates
+authentication/search/private-Node components, Termux and source bundles. It
+dispatches the exact product commit to these builders:
 
 - `openresearchtools/taskarian-build-arm64`: complete Linux ARM64 `.deb`.
 - `openresearchtools/taskarian-build-amd64`: complete Linux AMD64 `.deb`.
@@ -15,7 +16,8 @@ Each builder has its own compiler cache and uploads its installable candidate to
 its Actions run. Those artifacts can be downloaded manually immediately. The
 main workflow collects each target as soon as its upload appears; it does not
 wait for the other builders. Complete release assembly still requires all six
-binaries. Neither the builders nor the candidate workflow publish releases or APT.
+binaries. Builders publish permanent versioned component prereleases; the main
+publisher owns the installer release and APT publication.
 
 `BUILD_REPOS_TOKEN` exists only as an encrypted Actions secret in the product
 repository. Its fine-grained scope is Actions read/write on those four builders.
@@ -30,42 +32,54 @@ all application source remains here and is checked out by exact commit.
 
 The Linux browser workflow retains the external build directories, Mozilla
 bootstrap toolchains, compiler cache and optional gkrust warm-up from WildBuzzard.
-Completed browser archives/APKs are reused as Actions artifacts when their build
-inputs match, leaving the cache quota for compiler objects. Agent-only changes
-reassemble the Linux package without rebuilding unchanged Gecko. Cached binaries
-retain their actual producing commit in provenance. Native arm64 builds use an
-arm64 runner. Initial builds in the new repositories start with empty caches.
-The artifact verifier/cache policy is excluded from compile fingerprints. An
-older fingerprint is accepted only when recomputing it from the current compile
-inputs plus the producer's exact historical verifier blob gives the original
-digest. A checksummed equivalence receipt retains that blob, original source,
-manifest hash and successful producer steps; original manifests and binaries
-are unchanged. A later package-assembly failure does not discard a completed
-browser build: reuse requires successful build, verification and artifact upload
-steps in the same trusted completed builder run, plus full input/ABI/checksum
-verification. Cancelled, incomplete, failed-build or failed-verification runs are
-never reused. A successful run may also retain a previously verified cache hit.
-Android caches Gradle dependency downloads without storing the multi-gigabyte
-Mozilla bootstrap directory. Gradle task outputs use a separate Actions artifact
-with the repository's normal retention, restored from a successful builder run.
-They do not consume GitHub's
-compiler-cache quota. Gradle validates each task's inputs before reuse; changed
-application inputs can still require R8 to run. Pass caching/worker options using
-`GRADLE_FLAGS`, since `mach` replaces `GRADLE_OPTS`. Compiler statistics are saved
-immediately after Gecko compilation; those and the Gradle timing report remain
-downloadable from each run.
+Completed browser components are reused from permanent architecture-owned
+releases when their scoped inputs match. Ordinary restoration downloads runtime,
+license and small metadata files; complete matching sources and compiler backups
+remain in those releases. Agent-only changes reassemble the Linux package without
+rebuilding unchanged Gecko. Reuse preserves the actual producer and verified
+ABI/checksums. Historical input refinements require the existing checksummed
+equivalence receipts; original manifests and binary identities remain unchanged.
+A later application failure does not discard an independently verified and
+published component.
 
-For application Java/resource changes, Android also reuses unchanged Gecko
-libraries from a verified completed APK through Mozilla's artifact-build mode.
-The native comparison keeps GeckoView JNI sources, native sources, build
-definitions, version pins, mozconfig and compiler commands. Only application
-Java/assets/resources and the final collector are excluded. The original native
-producer, successful build evidence, APK/manifest checksums and individual Gecko
-library checksums remain in `build-manifest.json`; repeated reuse preserves that
-producer. Current Java, resources, native app modules, companion licenses and
-exact Termux package pairing are assembled and signed again. Complete APK
-fingerprints and revision checks still apply. A native input change uses the
-normal compiler cache and build.
+Android first checks for an exact-source APK or resource checkpoint with the
+same product version and actual paired Termux package metadata. A complete
+application hit skips compilation and immutable republication; a resource-only
+hit can finish the missing application publication.
+
+Otherwise, `android-geckoview-component.py` restores the complete GeckoView Maven
+module: AAR Java classes, manifest, resources, `omni.ja` and native libraries,
+plus upstream POM and Gradle `.module` dependency/capability metadata. Its inputs
+include the native engine identity and actual GeckoView Java/resource owners.
+The official engine version, such as `153.6.0esr`, stays separate from the
+Taskarian maintenance version. The original module build ID/source and separate
+native engine producer remain recorded through reuse, with full matching source
+and license references.
+
+A complete GeckoView hit skips its build and substitutes the exact local Maven
+module through Gradle's native dependency APIs. App configuration and required
+generated sources are prepared for ordinary application assembly. When the
+complete module is absent but the native engine matches, upstream artifact-build
+resource/staging tiers and the single GeckoView Maven publication create it;
+sample and AndroidTest APK tasks are omitted. Changed native inputs use their
+normal compiler owner and cache.
+
+Gradle dependency downloads and task outputs use separate Actions cache keys;
+the multi-gigabyte Mozilla bootstrap directory is not cached there. Gradle
+validates task inputs before reuse. Application code changes still run the
+required Java/Kotlin, resource, packaging and potentially R8 tasks. Pass worker
+and cache options through `GRADLE_FLAGS`, since `mach` replaces `GRADLE_OPTS`.
+The focused engine-only workflow verifies the real release task plan contains
+no GeckoView build tasks, then exercises native dependency/source/license tasks
+using the published app AARs without producing a new APK candidate.
+
+Focused verification on 7 November 2026 passed on
+[Android ARM64](https://github.com/openresearchtools/taskarian-build-android/actions/runs/42379867390)
+and [Android x86_64](https://github.com/openresearchtools/taskarian-build-android-x86_64/actions/runs/42379869329).
+Both restored previously published complete GeckoView modules, skipped native
+Gecko/resource/Maven production and APK assembly, and passed the release consumer
+plan plus actual native dependency/source/license tasks. These build checks do
+not replace installed-app acceptance.
 
 Android packaging-only changes can reuse the entire compiled APK module through
 `android-apk-module.py`. Its conservative identity retains browser code/resources,

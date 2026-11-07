@@ -228,6 +228,15 @@ def capture(directory, target, manifest, sources):
     write(capture_directory() / RECEIPT, record)
 
 
+def matches_resource(record, resource):
+    """Bind a capture to the exact canonical APK and its producing manifest."""
+    assets = {entry['name']: entry['sha256'] for entry in resource['manifest']['assets']}
+    manifest_sha = hashlib.sha256((json.dumps(record['manifest'], indent=2) + '\n').encode()).hexdigest()
+    return (resource['manifest']['sourceCommit'] == record['source'] and
+            assets.get(record['apkFile']) == record['apkSha256'] and
+            assets.get('build-manifest.json') == manifest_sha)
+
+
 def publish(directory, target, resource):
     directory, store, release = Path(directory), module('component-store'), module('browser-release')
     file = capture_directory() / RECEIPT
@@ -238,6 +247,11 @@ def publish(directory, target, resource):
     existing = store.lookup(COMPONENT, target, inputs(target))
     if existing:
         return existing
+    if not matches_resource(record, resource):
+        # A retry can find an older canonical browser-resources release. Its
+        # unrecorded resolved graph cannot be inferred from a fresh build.
+        print('Canonical APK lacks this exact producer capture; no module index seeded', flush=True)
+        return
     if os.environ.get('TASKARIAN_APK_MODULE_DIR') or record['source'] != release.source():
         raise ValueError('Only an actual full APK producer may establish a compiled-module index')
     with tempfile.TemporaryDirectory(prefix='apk-module-index-') as temporary:
@@ -281,7 +295,7 @@ def restore(directory, target):
     if producer is None:
         raise store.StoreUnavailable('Compiled APK producer payload is unavailable; retry without rebuilding')
     app = directory / record['apkFile']
-    if (producer['manifest']['sourceCommit'] != record['source'] or sha(app) != record['apkSha256'] or
+    if (not matches_resource(record, producer) or sha(app) != record['apkSha256'] or
             inventory(app) != record['files']):
         raise ValueError('Compiled APK payload differs from its verified original producer')
     write(directory / SELECTION, {'moduleRelease': release.reference(found), 'browserResources': origin})

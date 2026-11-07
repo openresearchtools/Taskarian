@@ -385,7 +385,7 @@ def dependencies(directories):
                 visit(json.loads(file.read_text()))
             except (ValueError, UnicodeError):
                 continue
-    for name in ('GECKO', 'GECKOVIEW', 'BROWSER_RESOURCES', 'TERMUX_APPLICATION'):
+    for name in ('GECKO', 'GECKOVIEW', 'BROWSER_RESOURCES', 'TERMUX_APPLICATION', 'ANDROID_APK_MODULE'):
         if os.environ.get('TASKARIAN_' + name + '_RELEASE_REFERENCE'):
             visit(json.loads(Path(os.environ['TASKARIAN_' + name + '_RELEASE_REFERENCE']).read_text()))
     return list(found.values())
@@ -668,6 +668,10 @@ def publish(kind, directory, target):
     found = store.lookup(kind, target, identity)
     if found:
         remember(found, directory, kind)
+        if kind == 'browser-resources' and target.startswith('android'):
+            compiled = module('android-apk-module').publish(directory, target, found)
+            if compiled:
+                remember(compiled, directory, 'android-apk-module')
         return found
     producer = None
     if kind == 'gecko':
@@ -707,9 +711,16 @@ def publish(kind, directory, target):
         ref = os.environ.get('TASKARIAN_GECKOVIEW_RELEASE_REFERENCE')
         if kind != 'gecko' and ref:
             dependencies.append(json.loads(Path(ref).read_text()))
+        ref = os.environ.get('TASKARIAN_ANDROID_APK_MODULE_RELEASE_REFERENCE')
+        if kind != 'gecko' and ref:
+            dependencies.append(json.loads(Path(ref).read_text()))
         result = store.publish(kind, target, version(revision, kind == 'gecko'), identity, staging,
                                assets=assets, source_commit=revision, producer=producer, dependencies=dependencies)
     remember(result, directory, kind)
+    if kind == 'browser-resources' and target.startswith('android'):
+        compiled = module('android-apk-module').publish(directory, target, result)
+        if compiled:
+            remember(compiled, directory, 'android-apk-module')
     return result
 
 

@@ -773,6 +773,7 @@ def verify(directory, target, digest, legacy_android_module=None):
         if pairing['sourceCommit'] != expected_source or pairing['sourceCommit'] != manifest['source']:
             raise ValueError('APK resources must be reassembled for this revision’s Termux packages')
         matching_input(directory, target, manifest.get('browser_input_sha256'), digest, manifest['source'])
+        browser_release().module('android-apk-module').verify_provenance(directory, target, manifest)
         if manifest.get('native_gecko'):
             spec = importlib.util.spec_from_file_location('android_native_component', ROOT / 'agent/packaging/android-native-component.py')
             native_component = importlib.util.module_from_spec(spec)

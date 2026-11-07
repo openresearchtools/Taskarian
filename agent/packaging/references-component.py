@@ -10,14 +10,23 @@ ROOT = Path(__file__).resolve().parents[2]
 CONNECTOR = ROOT / 'references/connector'
 
 
+def input_paths():
+    """Shared capture inputs for the native build and immutable APK reuse."""
+    return ['references/connector', 'references/vendor/translators', 'references/legal',
+            'references/web/theme.css', 'agent/packaging/source_cache.py',
+            *(f'browser/taskarian/browser/branding/default{size}.png' for size in [16, 32, 64, 128])]
+
+
 def fingerprint():
     result = hashlib.sha256()
-    roots = [CONNECTOR, ROOT / 'references/vendor/translators', ROOT / 'references/legal']
-    paths = [path for base in roots for path in base.rglob('*') if path.is_file()
-             and not {'.build', 'dist', 'node_modules', '__pycache__'}.intersection(path.relative_to(base).parts)]
-    paths += [ROOT / f'browser/taskarian/browser/branding/default{size}.png' for size in [16, 32, 64, 128]]
-    paths.append(ROOT / 'agent/packaging/source_cache.py')
-    paths.append(ROOT / 'references/web/theme.css')
+    paths = []
+    for name in input_paths():
+        base = ROOT / name
+        if base.is_dir():
+            paths.extend(path for path in base.rglob('*') if path.is_file()
+                         and not {'.build', 'dist', 'node_modules', '__pycache__'}.intersection(path.relative_to(base).parts))
+        else:
+            paths.append(base)
     for path in sorted(paths):
         result.update(str(path.relative_to(ROOT)).encode() + b'\0')
         result.update(hashlib.sha256(path.read_bytes()).digest())

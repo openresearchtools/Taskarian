@@ -67,6 +67,35 @@ exact Termux package pairing are assembled and signed again. Complete APK
 fingerprints and revision checks still apply. A native input change uses the
 normal compiler cache and build.
 
+Android packaging-only changes can reuse the entire compiled APK module through
+`android-apk-module.py`. Its conservative identity retains browser code/resources,
+build definitions, the actual native-leaf inputs and all Android dependency pins;
+the product maintenance version and paired backend metadata are assembly inputs.
+The collector captures the actual resolved source and legal inventories only
+after its normal APK checks. A small permanent component indexes that receipt and
+the existing browser-resources APK, without uploading a second APK. The large
+receipt stays outside normal application/installer downloads.
+
+On a matching module, native AAPT2 converts the manifest through Android's
+official protobuf API and changes only `versionName`. A native round trip must
+preserve every other XML field. Current companion notices, package assembly
+provenance and update/bootstrap assets are regenerated through the existing
+license and pairing owners. Every retained non-metadata ZIP entry must match its
+original producer byte-for-byte; old signatures are removed. The existing
+collector still performs real alignment, signing, source/native verification and
+final artifact checks. `build-manifest.json` distinguishes assembly source/run
+from the immutable compiled APK producer and its permanent component reference.
+The package manager and About version use the current manifest version; compiled
+BuildConfig source/date remain the producer's values. Reuse admits only the
+reviewed disabled-reporting consumers of BuildConfig.VERSION_NAME and preserves
+the existing versionCode policy. New functional consumers require an ordinary
+build and review of that contract.
+
+There is no historical APK seeding: older artifacts lack the captured resolved
+inventory required by this path. The first ordinarily required full APK producer
+under the new collector establishes its module; no full candidate is dispatched
+merely to populate it. Exact-source artifact restoration remains independent.
+
 Private Node jobs likewise restore a complete runtime and corresponding-source
 artifact before consulting download caches or upstream package pools. Reuse
 requires a successful Node assembly/upload job (or a verified prior restore) in

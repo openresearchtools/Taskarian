@@ -78,6 +78,14 @@ machine, machine_name, target = {
     'x86_64': (62, 'x86-64', 'android-x86_64'),
 }[abi]
 engine = (ROOT / 'browser/config/version_display.txt').read_text().strip()
+sys.path.insert(0, str(ROOT.parent / 'agent/packaging'))
+module_spec = importlib.util.spec_from_file_location('taskarian_apk_module', ROOT.parent / 'agent/packaging/android-apk-module.py')
+apk_module = importlib.util.module_from_spec(module_spec)
+module_spec.loader.exec_module(apk_module)
+compiled = None
+if os.environ.get('TASKARIAN_APK_MODULE_DIR'):
+    compiled = json.loads((Path(os.environ['TASKARIAN_APK_MODULE_DIR']) / apk_module.RECEIPT).read_text())
+    apk_module.validate_record(compiled, target)
 # Check before signing/copying a candidate. Licenses do not replace source, and
 # a collector receipt with unresolved coordinates is not a complete archive.
 source_inventories = list((OBJ / 'gradle/build/mobile/android/fenix').rglob('generated/taskarian-sources/sources.json'))
@@ -102,6 +110,10 @@ if actual_sources != expected_sources:
     raise SystemExit('Staged Android dependency sources differ from their committed inventory')
 library_source_path = os.environ.get('TASKARIAN_ANDROID_LIBRARY_SOURCE_REFERENCE')
 library_source = json.loads(Path(library_source_path).read_text()) if library_source_path else None
+if compiled and not library_source:
+    raise SystemExit('Metadata assembly requires the verified original Android source owner')
+if compiled and library_source['release'] != compiled['manifest']['android_library_source']:
+    raise SystemExit('Metadata assembly changed the original Android library source owner')
 for entry in source_manifest:
     name = entry['file']
     if Path(name).name != name or (not library_source and not (sources / name).is_file()):
@@ -208,8 +220,8 @@ tor_sources = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tor_sources)
 with zipfile.ZipFile(destination) as apk:
     manifest['tor_android'] = tor_sources.verify_android_tor(apk, ROOT.parent)
-remote = Path(os.environ['TASKARIAN_REMOTE_CLIENT_DIR'])
-remote_manifest = json.loads((remote / 'build-manifest.json').read_text())
+remote_manifest = (compiled['manifest']['remote_client'] if compiled else
+    json.loads((Path(os.environ['TASKARIAN_REMOTE_CLIENT_DIR']) / 'build-manifest.json').read_text()))
 remote_spec = importlib.util.spec_from_file_location('android_components', ROOT.parent / 'agent/packaging/android-components.py')
 remote_components = importlib.util.module_from_spec(remote_spec)
 remote_spec.loader.exec_module(remote_components)
@@ -240,6 +252,13 @@ with zipfile.ZipFile(destination) as apk:
             Path(os.environ['TASKARIAN_ANDROID_LIBRARY_SOURCE_DIRECTORY']), sources, source_manifest, apk)
 manifest['native_source_components'] = components
 manifest['android_library_source'] = library_source['release']
+manifest['compiled_apk'] = ({'source': compiled['source'], 'version': compiled['version'],
+    'run': compiled['run'], 'inputs': compiled['inputs'],
+    'producerApkSha256': compiled['apkSha256'],
+    'moduleRelease': json.loads((Path(os.environ['TASKARIAN_APK_MODULE_DIR']) / apk_module.SELECTION).read_text())['moduleRelease']}
+    if compiled else {'source': revision, 'version': version, 'run': manifest['build_run'],
+        'inputs': apk_module.inputs(target), 'producerApkSha256': hashlib.sha256(destination.read_bytes()).hexdigest()})
+apk_module.capture(OUT, target, manifest, sources)
 (OUT / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
 (OUT / 'signature.txt').write_text(signature)
 (OUT / 'manifest.txt').write_text(badging)

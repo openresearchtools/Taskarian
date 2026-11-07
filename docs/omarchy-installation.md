@@ -31,3 +31,31 @@ For release maintainers, the main publisher converts its verified local Linux
 DEBs before the initial upload. It does not download the new release again or
 rebuild its compiled components. Debian and Arch packages share the release's
 stable/prerelease flag and source/license index.
+
+## Installed verification
+
+Version `153.6.6-1` was installed from the signed `nightly` pacman catalogue on
+an Omarchy ARM64 host with 16 KiB memory pages. The packaged private Node.js,
+Podman, crun and helpers ran without a distribution-specific runtime patch.
+The corresponding prerelease contains both native Arch architectures and the
+Debian and Android installers; the central APT nightly catalogue also contains
+all four Debian package architectures.
+
+The installed desktop application was exercised in a separate Xvfb/Openbox
+session with software rendering. Its display, X authority and input were
+independent of the user's active desktop. Through Taskarian's normal controls,
+verification covered:
+
+- Creating and provisioning the stock ARM64 Debian container.
+- Opening its graphical desktop and using the guest terminal through Display.
+- Resizing, closing and reopening Display while preserving the guest session.
+- Powering the container off and on, then reconnecting its graphical desktop.
+- Enabling the guest Agent and opening its Files application with the normal
+  trusted connection.
+- Quitting Taskarian through its native menu and observing a clean application
+  exit, stopped managed container and cleaned-up managed services.
+- Reopening the installed application with the saved container retained.
+
+These results cover the ARM64 installation and software display path. The
+`x86_64` package passed packaging and payload integrity checks, but was not
+installed on this ARM64 host. Hardware graphics acceleration was not exercised.

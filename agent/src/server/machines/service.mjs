@@ -247,6 +247,10 @@ async function prepareImage(config, job) {
   const manifest = await readJson(path.join(context, 'packages/manifest.json'));
   const packaged = await readJson(path.join(packageRoot,'../build-platform.json'));
   if (manifest.revision !== packaged.revision || !manifest.revision || manifest.architecture !== ({ x64:'amd64', arm64:'arm64' })[process.arch] || !manifest.packages?.length) throw Error('Matching guest package artifacts are missing for this architecture');
+  const backend = manifest.packages.filter(item => item.package === 'taskarian-backend');
+  if (!packaged.version || manifest.version !== packaged.version || backend.length !== 1 || backend[0].version !== packaged.version) {
+    throw Error('The container guest backend must match this Taskarian app version');
+  }
   const { createHash } = await import('node:crypto');
   for (const item of manifest.packages) {
     if (path.basename(item.file) !== item.file || !/^[a-f0-9]{64}$/.test(item.sha256)) throw Error('Invalid guest package manifest');

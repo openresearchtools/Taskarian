@@ -4,6 +4,7 @@
 FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 ENV DEBIAN_FRONTEND=noninteractive
 COPY packages/ /tmp/taskarian-packages/
+COPY verify-packages.py /tmp/taskarian-verify-packages.py
 # AT-SPI 2.62 releases disconnected accessibility clients; stable's GTK bridge
 # leaks their descriptors. Select only this stack from official backports.
 RUN printf '%s\n' 'Types: deb' 'URIs: http://deb.debian.org/debian' \
@@ -21,6 +22,7 @@ RUN printf '%s\n' 'Types: deb' 'URIs: http://deb.debian.org/debian' \
     gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
     libgl1-mesa-dri mesa-vulkan-drivers fuse3 libfuse2t64 \
     /tmp/taskarian-packages/*.deb && \
+    python3 /tmp/taskarian-verify-packages.py /tmp/taskarian-packages/manifest.json && \
     (getent group user >/dev/null || groupadd --gid 1000 user) && \
     (id user >/dev/null 2>&1 || useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash user) && \
     install -d -o user -g user -m 0700 \
@@ -31,7 +33,7 @@ RUN printf '%s\n' 'Types: deb' 'URIs: http://deb.debian.org/debian' \
     mkdir -p /usr/share/taskarian && \
     dpkg-query -W -f='${binary:Package}\t${Version}\t${Architecture}\t${source:Package}\t${source:Version}\n' > /usr/share/taskarian/machine-packages.tsv && \
     cp /tmp/taskarian-packages/manifest.json /usr/share/taskarian/guest-components.json && \
-    rm -rf /tmp/taskarian-packages /var/lib/apt/lists/* && \
+    rm -rf /tmp/taskarian-packages /tmp/taskarian-verify-packages.py /var/lib/apt/lists/* && \
     truncate --size=0 /etc/machine-id
 STOPSIGNAL SIGRTMIN+3
 CMD ["/usr/lib/taskarian/machines/bin/taskarian-init"]

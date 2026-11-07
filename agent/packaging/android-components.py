@@ -77,8 +77,15 @@ def inputs(component, target, revision=None):
         layout = native.entry(revision, 'agent/packaging/runtime-layout.py')
         if layout:
             records['runtimeLayout'] = {'version': 1, 'recipe': layout}
-    return {'schema': 1, 'component': component, 'abi': abi(target), 'records': records,
-            'files': {path: native.entry(revision, path) for path in paths}}
+    files = {path: native.entry(revision, path) for path in paths}
+    if component == 'android-x11':
+        # The exact reviewed Maven consumer block is inactive in this native
+        # producer, just as it is in the Gecko producer. Keep all other bytes.
+        browser = module('browser-component')
+        browser.ensure_source(revision)
+        files['browser/build.gradle'] = browser.blob_identity(browser.native_gradle_base(
+            browser.network_command(['git', 'show', revision + ':browser/build.gradle'], binary=True)))
+    return {'schema': 1, 'component': component, 'abi': abi(target), 'records': records, 'files': files}
 
 
 component_inputs = inputs
